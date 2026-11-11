@@ -10,6 +10,8 @@ agent 通过工具读写同一份数据并用 `dev_item` 回报进展。
 
 - **项目**：任务归属到项目；顶部项目切换器可在「全部项目」与单个项目之间切换（筛选会记住）；
   「项目」视图用卡片总览每个项目的状态、完成率、各状态计数与最近到期。
+- **项目关联空间**：每个项目可绑定一个 DSH 工作区（空间）；项目卡、切换器菜单显示所属空间，
+  派给 agent 的任务会话会在该空间打开（项目对话框里选「空间」，默认当前看板空间）。
 - **看板**：待办 / 进行中 / 待验收 / 受阻 / 已完成五列；拖拽移动，也有卡片菜单与键盘路径；
   「全部项目」模式下卡片带项目色点标签。
 - **今日**：需要你决定的事、指标条（进行中/今日到期/逾期/待验收/停滞 + 完成率）、
@@ -32,9 +34,13 @@ agent 通过工具读写同一份数据并用 `dev_item` 回报进展。
 |---|---|
 | ![今日](docs/preview/today-dark.png) | ![看板](docs/preview/board-dark.png) |
 
-| 项目总览（深色） | 项目切换器（深色） |
+| 项目总览（含所属空间） | 项目切换器（显示空间） |
 |---|---|
 | ![项目](docs/preview/projects-dark.png) | ![切换器](docs/preview/switcher-dark.png) |
+
+| 项目关联空间 |
+|---|
+| ![空间](docs/preview/project-space-dark.png) |
 
 | 任务抽屉（深色） | 今日（浅色） |
 |---|---|
@@ -75,8 +81,8 @@ plugin_manager action=install_bundle target=<本仓库绝对路径>
 ## 数据
 
 - 位置：`<工作区根>/.devwork/board.json`（每个工作区一份；面板右上角显示当前根）。
-- 数据版本 v2：`projects[]` + `tasks[].projectId`；v1 旧板读入时自动迁移（补「默认项目」，
-  把无归属任务归入），不丢任务。
+- 数据版本 v3：`projects[]`（含 `workspaceId/workspacePath/workspaceTitle` 空间绑定）+
+  `tasks[].projectId`；v1/v2 旧板读入时自动迁移，不丢任务。
 - 唯一事实源；写入为 tmp + rename 原子替换，坏 JSON 会备份成 `board.json.bad-<ts>` 后重建。
 - 可回滚：删除 `.devwork/` 即回到空看板。
 - 任务编号 `T-1`、注意力编号 `A-1`，永不复用。
@@ -96,8 +102,9 @@ plugin_manager action=install_bundle target=<本仓库绝对路径>
 ## agent 用法
 
 ```text
-dev_project action=create name="登录改版" color="#5B7CFA"
-dev_project action=list                     # 看项目 + 各项目统计
+dev_project action=create name="登录改版" color="#5B7CFA" workspace="dsh—devWork"
+dev_project action=update project=登录改版 workspace=""   # 解除空间绑定
+dev_project action=list                     # 看项目 + 各项目统计 + 可用空间
 dev_board  view=brief                     # 今天该干什么（全部项目）
 dev_board  view=brief project=登录改版      # 只看某项目
 dev_item   action=create patch={title:"实现 SSE 重连", type:"dev", priority:"P1", due:"2026-11-14", project:"登录改版"}
@@ -114,7 +121,7 @@ dev_brief  period=today apply=false
 | 方法 | 路径 |
 |---|---|
 | GET | `/meta` · `/state` · `/stream`（SSE） |
-| POST | `/project/create` · `/project/update` · `/project/delete`（人） |
+| POST | `/project/create` · `/project/update`（可带 `workspace` 绑定） · `/project/delete`（人） |
 | POST | `/task/create` · `/task/update` · `/task/move` · `/task/delete` · `/task/checkin` |
 | POST | `/attention/ask` · `/attention/resolve` · `/settings/update` · `/handoff` |
 

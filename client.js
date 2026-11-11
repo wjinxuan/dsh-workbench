@@ -78,6 +78,9 @@ window.__ModuleLoader__.load({
       projectNotEmpty: '项目下还有任务，请先移走或选择移到别的项目',
       filterProject: '项目', moveToProject: '移到项目', projectTasks: '任务',
       openCount: '未完成', editProject: '编辑项目', taskOfProject: '项目任务',
+      space: '空间', spaces: '空间', bindSpace: '关联空间', noSpace: '未绑定空间',
+      spaceUnavailable: '空间不可用', currentSpace: '当前空间', spaceHint: '派给 agent 的会话会在该空间打开',
+      projectSpace: '项目空间', spacePath: '路径', boardSpace: '看板空间',
     };
     const EN = {
       brand: 'Dev workbench', tagline: 'Design · product · build, in one board',
@@ -126,6 +129,9 @@ window.__ModuleLoader__.load({
       projectNotEmpty: 'Project still has tasks — move them first',
       filterProject: 'Project', moveToProject: 'Move to project', projectTasks: 'tasks',
       openCount: 'open', editProject: 'Edit project', taskOfProject: 'project tasks',
+      space: 'Space', spaces: 'Spaces', bindSpace: 'Bind space', noSpace: 'No space',
+      spaceUnavailable: 'Space unavailable', currentSpace: 'Current space', spaceHint: 'Agent sessions open in this space',
+      projectSpace: 'Project space', spacePath: 'Path', boardSpace: 'Board space',
     };
     /* 面板文案以中文为主（列名/类型名等枚举也为中文）；EN 词表保留给后续 i18n。 */
     const DICT = ZH;
@@ -311,6 +317,18 @@ window.__ModuleLoader__.load({
     const initialOf = (s) => { const x = String(s || t('human')).trim(); return x ? x.slice(0, 1).toUpperCase() : '·'; };
     function typeOf(k) { return TYPE_MAP[k] || TYPES[2]; }
     function projectStatusOf(k) { return PROJECT_STATUS_MAP[k] || PROJECT_STATUS[0]; }
+    function projectSpaceOf(project) {
+      if (!project) return null;
+      if (project.workspace && project.workspace.title) return project.workspace;
+      if (project.workspaceId) return { id: project.workspaceId, title: project.workspaceTitle || '', path: project.workspacePath || '', missing: true };
+      return null;
+    }
+    function projectSpaceLabel(project) {
+      const sp = projectSpaceOf(project);
+      if (!sp) return t('noSpace');
+      if (sp.missing) return t('spaceUnavailable') + (sp.title ? '（' + sp.title + '）' : '');
+      return sp.title || sp.path || t('spaceUnavailable');
+    }
     function projectById(projects, id) { return toArray(projects).find((p) => p && p.id === id) || null; }
     function projectOfTask(projects, task) { return task && task.projectId ? projectById(projects, task.projectId) : null; }
     function projectNameOf(projects, id) { const p = projectById(projects, id); return p ? p.name : t('unassigned'); }
@@ -637,9 +655,11 @@ window.__ModuleLoader__.load({
             key: p.id, type: 'button', role: 'menuitemradio', 'aria-checked': value === p.id,
             className: 'dw-menu-item' + (value === p.id ? ' on' : ''),
             onClick: () => { setOpen(false); props.onChange(p.id); },
+            title: p.name + ' · ' + projectSpaceLabel(p),
           },
             h('span', { className: 'dw-projdot', style: { background: p.color }, 'aria-hidden': 'true' }),
             h('span', { className: 'dw-menu-grow' }, p.name),
+            h('span', { className: 'dw-menu-space' }, projectSpaceLabel(p)),
             h('span', { className: 'dw-menu-count' }, openCount(p)))),
           h('div', { className: 'dw-menu-sep' }),
           h('button', { type: 'button', role: 'menuitem', className: 'dw-menu-item', onClick: () => { setOpen(false); props.onCreate(); } },
@@ -712,6 +732,8 @@ window.__ModuleLoader__.load({
             h('span', { className: 'dot-red' }, h('b', null, Number(st.blocked) || 0), ' ', t('blocked')),
             h('span', { className: 'dot-muted' }, h('b', null, done), ' ', t('done'))),
           h('div', { className: 'dw-projcard-foot' },
+            h('span', { className: 'dw-spacechip', title: (projectSpaceOf(p) || {}).path || '' },
+              h(Icon, { name: 'folder', size: 12 }), projectSpaceLabel(p)),
             h('span', null, h(Icon, { name: 'list', size: 12 }), (Number(st.total) || 0) + ' ' + t('projectTasks')),
             nextDue ? h('span', { className: 'dw-due dw-due-' + (dueTone(nextDue) || 'normal') }, h(Icon, { name: 'calendar', size: 12 }), t('nextDue') + ' ' + nextDue.slice(5).replace('-', '/')) : null));
       };
@@ -735,10 +757,12 @@ window.__ModuleLoader__.load({
     function ProjectDialog(props) {
       const mode = props.mode || 'create';
       const p = props.project || null;
+      const spaces = toArray(props.workspaces);
       const [name, setName] = useState(p ? p.name : '');
       const [color, setColor] = useState(p ? p.color : PROJECT_COLORS[0]);
       const [description, setDescription] = useState(p ? (p.description || '') : '');
       const [status, setStatus] = useState(p ? p.status : 'active');
+      const [space, setSpace] = useState(p ? (p.workspaceId || '') : (props.defaultSpaceId || ''));
       const [busy, setBusy] = useState(false);
       const [confirm, setConfirm] = useState(false);
       const ref = useRef(null);
@@ -748,8 +772,8 @@ window.__ModuleLoader__.load({
         if (!v) return;
         setBusy(true);
         const payload = mode === 'edit'
-          ? { id: p.id, patch: { name: v, color: color, description: description, status: status } }
-          : { name: v, color: color, description: description };
+          ? { id: p.id, patch: { name: v, color: color, description: description, status: status, workspace: space } }
+          : { name: v, color: color, description: description, workspace: space };
         const r = await props.onSave(payload, mode);
         setBusy(false);
         if (r && r.ok) props.onClose();
@@ -782,6 +806,10 @@ window.__ModuleLoader__.load({
                   style: { background: c }, 'aria-label': c, 'aria-pressed': c.toLowerCase() === String(color).toLowerCase(),
                   onClick: () => setColor(c),
                 })))),
+            h('label', { className: 'dw-field' }, h('span', { className: 'dw-field-label' }, t('space') + ' · ' + t('spaceHint')),
+              h('select', { value: space, onChange: (e) => setSpace(e.target.value) },
+                h('option', { value: '' }, t('noSpace')),
+                spaces.map((w) => h('option', { key: w.id, value: w.id }, w.title + (w.isBoard ? '（' + t('currentSpace') + '）' : '') + (w.path ? ' · ' + w.path : ''))))),
             mode === 'edit' ? h('label', { className: 'dw-field' }, h('span', { className: 'dw-field-label' }, t('projectStatus')),
               h('select', { value: status, onChange: (e) => setStatus(e.target.value) },
                 PROJECT_STATUS.map((x) => h('option', { key: x.key, value: x.key }, x.label)))) : null,
@@ -1441,6 +1469,8 @@ window.__ModuleLoader__.load({
       }, [data, projectFilter, setProjectFilter]);
 
       const openTask = data && openId ? toArray(data.tasks).find((x) => x.id === openId) : null;
+      const workspaces = toArray(data && data.workspaces);
+      const boardSpace = workspaces.find((w) => w.isBoard) || null;
 
       useEffect(() => {
         const onKey = (e) => {
@@ -1540,7 +1570,8 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dw-brand-mark', 'aria-hidden': 'true' }, h(Icon, { name: 'kanban', size: 17 })),
           h('div', { className: 'dw-brand-text' },
             h('span', { className: 'dw-brand-title' }, t('brand')),
-            h('span', { className: 'dw-brand-sub' }, data && data.root ? data.root : t('tagline')))),
+            h('span', { className: 'dw-brand-sub' },
+              boardSpace ? (t('boardSpace') + '：' + boardSpace.title + ' · ' + (data.root || '')) : (data && data.root ? data.root : t('tagline'))))),
         data ? h(ProjectSwitcher, {
           projects: toArray(data.projects), value: projectFilter, onChange: setProjectFilter,
           onCreate: () => setProjectDialog({ mode: 'create', project: null }),
@@ -1613,6 +1644,7 @@ window.__ModuleLoader__.load({
         }) : null,
         projectDialog ? h(ProjectDialog, {
           mode: projectDialog.mode, project: projectDialog.project,
+          workspaces: workspaces, defaultSpaceId: boardSpace ? boardSpace.id : '',
           onSave: saveProject, onDelete: deleteProject, pushToast: wb.pushToast,
           onClose: () => setProjectDialog(null),
         }) : null,
@@ -2042,6 +2074,12 @@ window.__ModuleLoader__.load({
 .dw-projcard.add{justify-content:center;align-items:center;gap:6px;min-height:150px;border-style:dashed;border-left-width:1px;
   color:var(--dw-text-2);font-size:12.5px;background:transparent}
 .dw-projcard.add:hover{color:var(--dw-accent);border-color:color-mix(in srgb,var(--dw-accent) 45%,transparent);transform:none}
+
+/* 空间 */
+.dw-spacechip{display:inline-flex;align-items:center;gap:4px;max-width:180px;font-size:10.5px;color:var(--dw-text-2);
+  background:var(--dw-surface-2);border:1px solid var(--dw-border);border-radius:5px;padding:1px 6px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dw-menu-space{max-width:96px;font-size:10px;color:var(--dw-text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 /* 颜色选择 */
 .dw-swatches{display:flex;gap:8px;flex-wrap:wrap}

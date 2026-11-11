@@ -2,9 +2,9 @@
  * dsh-devwork · 宿主半（DeepSeek Harness Web UI 插件）
  *
  * 能力：
- * - agent 工具：dev_board / dev_item / dev_attention / dev_brief / dev_project（v2）
+ * - agent 工具：dev_board / dev_item / dev_attention / dev_brief / dev_project（v2，v3 增空间绑定）
  * - HTTP 路由 /devwork/api/*（meta · state · stream · task/* · project/* · attention/* · settings · handoff）
- * - 系统提示词注入：开发工作台编排规则 + 回报协议 + 红线 + 项目与并行（v2 §10.4）
+ * - 系统提示词注入：开发工作台编排规则 + 回报协议 + 红线 + 项目与并行（§10.4）+ 项目与空间（§11.3）
  * - 客户端面板（client.js，另一侧）：5 列看板 / 今日焦点 / 活动流 / 项目视图
  *
  * 约束：本插件运行时无法 import @deepseek-ai/*，服务一律通过 ctx.get(...) 探测；
@@ -186,6 +186,7 @@ const STATUS_OF_CODE = {
   INVALID_TRANSITION: 409,
   HUMAN_ONLY: 409,
   PROJECT_NOT_EMPTY: 409,
+  UNAVAILABLE: 503,
   READ_FAILED: 500,
   WRITE_FAILED: 500,
 };
@@ -240,6 +241,38 @@ function listWorkspaces(ctx) {
     } catch { /* 下一个方法 */ }
   }
   return [];
+}
+
+/** `workspaceRegistry.list()` → `[{id,title,path}]`；不可用返回 []（CONTRACT §11.1）。 */
+function workspaceList(ctx) {
+  const reg = svcOfImpl(ctx, 'workspaceRegistry');
+  if (!reg || typeof reg.list !== 'function') return [];
+  let arr;
+  try { arr = reg.list(); } catch { return []; }
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  for (const w of arr) {
+    if (!w || typeof w !== 'object') continue;
+    const id = U.trimStr(w.id, S.LIMITS.workspaceId);
+    if (!id) continue;
+    out.push({
+      id,
+      title: U.trimStr(w.title, S.LIMITS.workspaceTitle),
+      path: U.trimStr(w.path, S.LIMITS.workspacePath),
+    });
+  }
+  return out;
+}
+
+/** registry 服务是否可用（能调用 list()）。 */
+function workspaceRegistryAvailable(ctx) {
+  const reg = svcOfImpl(ctx, 'workspaceRegistry');
+  return !!(reg && typeof reg.list === 'function');
+}
+
+/** /state.workspacesHow：空间清单来源。 */
+function workspacesHowText(ctx) {
+  return workspaceRegistryAvailable(ctx) ? 'workspaceRegistry.list()' : 'workspaceRegistry 不可用';
 }
 
 /**
@@ -321,6 +354,87 @@ function rootParam(req, body) {
   const b = body && typeof body === 'object' ? body.root : undefined;
   const v = b !== undefined && b !== null && String(b).trim() ? b : qs(req).root;
   return U.trimStr(v, 2000);
+}
+
+/* ---------------- 空间绑定（CONTRACT §11） ---------------- */
+
+/** 空间 id → 空间对象（按当前 registry 现取）。 */
+function workspaceMapOf(list) {
+  const map = new Map();
+  for (const w of Array.isArray(list) ? list : []) if (w && w.id) map.set(w.id, w);
+  return map;
+}
+
+/**
+ * 项目的空间展示值（§11.1）：按 workspaceId 从当前 registry 现取，找不到用项目快照；
+ * 未绑定返回 null。接受 `byId`（workspaceMapOf 结果）避免重复建表。
+ */
+function projectWorkspaceOf(project, byId) {
+  const snap = S.projectWorkspaceSnapshot(project);
+  if (!snap) return null;
+  const live = byId && byId.get ? byId.get(snap.id) : null;
+  return live ? { id: live.id, title: live.title, path: live.path } : snap;
+}
+
+/**
+ * 解析 body / patch / 工具参数里的 `workspace`（§11.1 绑定解析）：
+ * - undefined → undefined（未提供：create 不绑定 / update 保持原绑定）；
+ * - null / 空串 → null（清空三字段）；
+ * - 字符串（id / 名称 / 路径）→ registry 解析命中对象；未命中 INVALID_INPUT 并列出可用空间；
+ * - 对象 `{id|name|title|path}` → 取引用后同上。
+ * registry 不可用且请求非空 → UNAVAILABLE（只允许清空）。空串始终允许。
+ * @returns {{id:string,title:string,path:string}|null|undefined}
+ * @throws {DevworkError}
+ */
+function resolveWorkspaceParam(ctx, value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'object') {
+    if (Array.isArray(value)) throw U.fail('INVALID_INPUT', 'workspace 必须是空间 id / 名称 / 路径 或空串');
+    const ref = U.trimStr(value.id, S.LIMITS.workspaceId)
+      || U.trimStr(value.name, S.LIMITS.workspaceTitle)
+      || U.trimStr(value.title, S.LIMITS.workspaceTitle)
+      || U.trimStr(value.path, S.LIMITS.workspacePath);
+    if (!ref) return null;
+    return resolveWorkspaceParam(ctx, ref);
+  }
+  if (typeof value !== 'string') throw U.fail('INVALID_INPUT', 'workspace 必须是空间 id / 名称 / 路径 或空串');
+  const raw = U.trimStr(value, S.LIMITS.workspaceRef);
+  if (!raw) return null;
+  if (!workspaceRegistryAvailable(ctx)) {
+    throw U.fail('UNAVAILABLE', '无法绑定空间：本部署未挂载 workspaceRegistry（只允许解除绑定：workspace 传空串）');
+  }
+  const list = workspaceList(ctx);
+  if (!list.length) {
+    throw U.fail('INVALID_INPUT', '无法绑定空间：workspaceRegistry 里没有已注册的工作区');
+  }
+  const hit = S.resolveWorkspaceRef(list, raw);
+  if (!hit) {
+    throw U.fail('INVALID_INPUT', '未知空间：' + raw + '；可用空间：' + S.workspaceListHint(list));
+  }
+  return hit;
+}
+
+/** 派会话时项目绑定的空间选择（§11.2）：项目有 workspaceId 且仍在 registry → {id, how:'项目空间'}。 */
+function projectWorkspaceChoice(ctx, project) {
+  const snap = S.projectWorkspaceSnapshot(project);
+  if (!snap) return null;
+  const live = workspaceList(ctx).find((w) => w && w.id === snap.id);
+  return live ? { id: live.id, how: '项目空间' } : null;
+}
+
+/** 工具输出用：可用空间清单（多行；root 给定时标注当前看板空间）。 */
+function workspaceListText(ctx, root) {
+  if (!workspaceRegistryAvailable(ctx)) return ['可用空间：不可用（本部署未挂载 workspaceRegistry）'];
+  const list = workspaceList(ctx);
+  if (!list.length) return ['可用空间：workspaceRegistry 未注册任何工作区'];
+  const rn = root ? U.normPath(root) : '';
+  const lines = [`可用空间（${list.length}）`];
+  for (const w of list) {
+    const isBoard = !!rn && !!w.path && U.normPath(w.path) === rn;
+    lines.push(`- ${w.title || w.id}｜${w.path || '（无路径）'}${isBoard ? '（当前看板空间）' : ''}`);
+  }
+  return lines;
 }
 
 /* ---------------- 文本渲染（工具输出） ---------------- */
@@ -420,8 +534,9 @@ function boardText(board, tasks, root, how, filters, project) {
   return lines.join('\n');
 }
 
-/** 项目总览文本（dev_board view=projects）。 */
-function projectLine(p) {
+/** 项目总览文本（dev_board view=projects / dev_project list）。 */
+function projectLine(p, opts) {
+  const o = opts || {};
   const s = p.stats || {};
   const bits = [
     `${p.id} ${p.name}`,
@@ -432,21 +547,30 @@ function projectLine(p) {
     `受阻 ${Number(s.blocked) || 0}`,
     `完成率 ${Number(s.progress) || 0}%`,
   ];
+  /* v3（§11.3）：项目带空间名；dev_project list 用「空间：名称｜路径」完整形式 */
+  const sp = p.workspace || S.projectWorkspaceSnapshot(p);
+  if (o.spaceStyle === 'full') {
+    bits.push('空间：' + (sp ? `${sp.title || sp.id}｜${sp.path || '（无路径）'}` : '未绑定'));
+  } else {
+    bits.push('空间：' + (sp ? (sp.title || sp.path || sp.id) : '未绑定'));
+  }
   if (s.nextDue) bits.push('最近到期 ' + s.nextDue);
   if (p.description) bits.push('说明：' + oneLine(p.description, 40));
   return '- ' + bits.join('｜');
 }
 
-function projectsText(board, now, project) {
+function projectsText(board, now, project, workspaces) {
+  const byId = workspaceMapOf(workspaces);
   const all = (Array.isArray(board.projects) ? board.projects : []).map((p) => ({
     ...p,
+    workspace: projectWorkspaceOf(p, byId),
     stats: S.computeProjectStats(board, p.id, now),
   }));
   const projects = project ? all.filter((p) => p.id === project.id) : all;
   const lines = ['开发工作台 · 项目总览' + (project ? `（${project.name}）` : '')];
   lines.push(`项目 ${projects.length} 个｜任务 ${(Array.isArray(board.tasks) ? board.tasks : []).length} 个｜rev ${board.rev}`);
   lines.push('');
-  for (const p of projects) lines.push(projectLine(p));
+  for (const p of projects) lines.push(projectLine(p, { spaceStyle: 'short' }));
   const unassigned = (Array.isArray(board.tasks) ? board.tasks : []).filter((t) => t && !t.projectId);
   if (unassigned.length && !project) lines.push(`未归属任务：${unassigned.length} 个（用 dev_item action=update project=<项目> 改归）`);
   lines.push('');
@@ -519,7 +643,11 @@ function projectStatsText(board, project, now) {
 function briefText(brief, applied, board) {
   const stats = brief.stats;
   const lines = [];
-  const scope = brief.project ? `｜项目：${brief.project.name}（${brief.project.id}）` : '';
+  const pj = brief.project;
+  const pjSpace = pj && pj.workspace ? (pj.workspace.title || pj.workspace.path || pj.workspace.id) : '';
+  const scope = pj
+    ? `｜项目：${pj.name}（${pj.id}）` + (pjSpace ? '｜空间：' + pjSpace : '')
+    : '';
   lines.push(`开发工作台 · ${brief.period === 'week' ? '本周' : '今日'}简报（${brief.today}）${scope}｜rev ${brief.rev}`);
   lines.push(`任务 ${stats.total}｜进行中 ${stats.doing}｜今日到期 ${stats.dueToday}｜已逾期 ${stats.overdue}｜受阻 ${stats.blocked}｜待验收 ${stats.review}｜本周完成 ${stats.doneThisWeek}`);
 
@@ -655,7 +783,7 @@ export function apply(ctx) {
     return { id: '', how: '默认工作区' };
   }
 
-  async function handoffToSession(promptText, root) {
+  async function handoffToSession(promptText, root, preferred) {
     const sc = svcOfImpl(ctx, 'sessionController');
     if (!sc || typeof sc.create !== 'function' || typeof sc.prompt !== 'function') {
       return {
@@ -664,7 +792,8 @@ export function apply(ctx) {
         reason: '本部署未挂载 sessionController，无法自动开会话——请在对话框里粘贴下方提示词继续。',
       };
     }
-    const choice = chooseWorkspace(root);
+    /* v3（§11.2）：项目绑定的空间优先；否则沿用 chooseWorkspace(root) */
+    const choice = preferred && preferred.id ? preferred : chooseWorkspace(root);
     try {
       const created = await sc.create(choice.id ? { workspaceId: choice.id } : {});
       const sessionId = created && (created.sessionId || created.id);
@@ -756,6 +885,7 @@ export function apply(ctx) {
         limits: S.LIMITS,
         tools: ['dev_board', 'dev_item', 'dev_attention', 'dev_brief', 'dev_project'],
         humanOnly: ['task.done', 'task.delete', 'attention.resolve', 'project.delete'],
+        workspaceBinding: true,
       });
     });
 
@@ -763,8 +893,17 @@ export function apply(ctx) {
       const { root, how } = resolveRoot(ctx, qs(req).root);
       const board = S.loadBoard(root);
       const now = U.nowIso();
+      /* v3（§11.1）：workspaces + 每个项目的空间展示值（registry 现取，找不到用快照） */
+      const workspaces = workspaceList(ctx).map((w) => ({
+        id: w.id,
+        title: w.title,
+        path: w.path,
+        isBoard: !!w.path && U.normPath(w.path) === U.normPath(root),
+      }));
+      const byId = workspaceMapOf(workspaces);
       const projects = (Array.isArray(board.projects) ? board.projects : []).map((p) => ({
         ...p,
+        workspace: projectWorkspaceOf(p, byId),
         stats: S.computeProjectStats(board, p.id, now),
       }));
       json(res, 200, {
@@ -775,6 +914,8 @@ export function apply(ctx) {
         now,
         project: board.project,
         projects,
+        workspaces,
+        workspacesHow: workspacesHowText(ctx),
         settings: board.settings,
         tasks: board.tasks,
         attention: board.attention,
@@ -871,8 +1012,17 @@ export function apply(ctx) {
     add(`${API}/project/create`, { methods: ['POST'], json: true }, async (req, res) => {
       const body = await readJsonBody(req);
       const { root } = resolveRoot(ctx, rootParam(req, body));
-      const { board, out } = await mutate(root, (b) => S.createProject(b, body, { by: 'human' }));
-      json(res, 200, { ok: true, project: out.project, rev: board.rev });
+      /* v3（§11.1）：workspace 空串/null=不绑定；id/名称/路径按 registry 解析，不可用 → UNAVAILABLE */
+      const workspace = resolveWorkspaceParam(ctx, body.workspace);
+      const input = { ...body };
+      if (workspace === undefined) delete input.workspace;
+      else input.workspace = workspace;
+      const { board, out } = await mutate(root, (b) => S.createProject(b, input, { by: 'human' }));
+      json(res, 200, {
+        ok: true,
+        project: { ...out.project, workspace: S.projectWorkspaceSnapshot(out.project) },
+        rev: board.rev,
+      });
     });
 
     add(`${API}/project/update`, { methods: ['POST'], json: true }, async (req, res) => {
@@ -882,10 +1032,25 @@ export function apply(ctx) {
       let patch = body.patch;
       if (!U.isPlainObject(patch)) {
         patch = {};
-        for (const k of ['name', 'color', 'description', 'status']) if (k in body) patch[k] = body[k];
+        for (const k of ['name', 'color', 'description', 'status', 'workspace']) if (k in body) patch[k] = body[k];
+      } else {
+        patch = { ...patch };
+        if (Object.prototype.hasOwnProperty.call(body, 'workspace')
+          && !Object.prototype.hasOwnProperty.call(patch, 'workspace')) {
+          patch.workspace = body.workspace;
+        }
+      }
+      /* v3（§11.1）：patch.workspace 空串/null=解除绑定；非空必须解析成空间对象后写入 */
+      if (Object.prototype.hasOwnProperty.call(patch, 'workspace')) {
+        patch.workspace = resolveWorkspaceParam(ctx, patch.workspace === undefined ? null : patch.workspace);
       }
       const { board, out } = await mutate(root, (b) => S.updateProject(b, ref, patch, { by: 'human' }));
-      json(res, 200, { ok: true, project: out.project, changed: out.changed, rev: board.rev });
+      json(res, 200, {
+        ok: true,
+        project: { ...out.project, workspace: S.projectWorkspaceSnapshot(out.project) },
+        changed: out.changed,
+        rev: board.rev,
+      });
     });
 
     add(`${API}/project/delete`, { methods: ['POST'], json: true }, async (req, res) => {
@@ -955,8 +1120,11 @@ export function apply(ctx) {
       if (!project && projectRef) project = S.resolveProject(board, projectRef);
       const custom = U.trimStr(body.prompt, 20000);
       const prompt = custom || S.HANDOFF_PROMPT(task, mode, project);
+      /* v3（§11.2）：任务所属项目有 workspaceId 且仍在 registry → sessionController.create({workspaceId})，
+         workspaceHow='项目空间'；否则沿用 chooseWorkspace(root)。 */
+      const preferred = project ? projectWorkspaceChoice(ctx, project) : null;
 
-      const r = await handoffToSession(prompt, root);
+      const r = await handoffToSession(prompt, root, preferred);
       if (!r.ok) {
         json(res, 200, { ok: false, code: r.code || 'UNAVAILABLE', reason: r.reason, prompt });
         return;
@@ -1009,10 +1177,10 @@ export function apply(ctx) {
     const tools = svcOfImpl(ctx, 'tools');
     if (!tools || typeof tools.register !== 'function') { log('tools 服务不可用'); return; }
 
-    /* 4.5 dev_project（v2 项目，CONTRACT §10.4） */
+    /* 4.5 dev_project（v2 项目，CONTRACT §10.4；v3 空间绑定 §11.3） */
     tools.register({
       name: 'dev_project',
-      description: '开发工作台：项目（多项目并行）。list=项目列表 + 统计；create=新建项目（名称唯一，颜色 8 色预设，最多 50 个）；update=改名称/颜色/描述/状态。删除项目只能由人在面板执行——本工具没有 delete，传入 delete 一律返回 HUMAN_ONLY。',
+      description: '开发工作台：项目（多项目并行）。list=项目列表 + 统计 + 可用空间；create=新建项目（名称唯一，颜色 8 色预设，最多 50 个）；update=改名称/颜色/描述/状态/绑定空间（workspace，空串=解除绑定）。删除项目只能由人在面板执行——本工具没有 delete，传入 delete 一律返回 HUMAN_ONLY。',
       parameters: {
         type: 'object',
         properties: {
@@ -1023,7 +1191,8 @@ export function apply(ctx) {
           color: { type: 'string', description: 'create/update：颜色 #RRGGBB（缺省 #5B7CFA）' },
           description: { type: 'string', description: 'create/update：项目描述（≤2000 字）' },
           status: { type: 'string', enum: ['active', 'paused', 'done'], description: 'update：项目状态' },
-          patch: { type: 'object', description: 'update 的 patch：{name?,color?,description?,status?}' },
+          workspace: { type: 'string', description: 'create/update：绑定空间（DSH 工作区）id / 名称 / 路径；空串=解除绑定' },
+          patch: { type: 'object', description: 'update 的 patch：{name?,color?,description?,status?,workspace?}' },
           root: { type: 'string', description: '工作区根目录（可选）' },
         },
         required: ['action'],
@@ -1050,18 +1219,25 @@ export function apply(ctx) {
           if (action === 'list') {
             const board = S.loadBoard(root);
             const now = U.nowIso();
+            const workspaces = workspaceList(ctx);
+            const byId = workspaceMapOf(workspaces);
             const projects = (Array.isArray(board.projects) ? board.projects : []).map((p) => ({
               ...p,
+              /* v3（§11.3）：每项输出空间（名称｜路径 / 未绑定） */
+              workspace: projectWorkspaceOf(p, byId),
               stats: S.computeProjectStats(board, p.id, now),
             }));
             const lines = [`开发工作台 · 项目 ${projects.length} 个（工作区：${root}，依据：${how}）`];
-            for (const p of projects) lines.push(projectLine(p));
+            for (const p of projects) lines.push(projectLine(p, { spaceStyle: 'full' }));
             const unassigned = (Array.isArray(board.tasks) ? board.tasks : []).filter((t) => t && !t.projectId).length;
             if (unassigned) lines.push(`未归属任务：${unassigned} 个（dev_item action=update project=<项目> 改归）`);
             lines.push('');
+            lines.push(...workspaceListText(ctx, root));
+            lines.push('');
+            lines.push('绑定空间：dev_project action=update project=<项目> workspace=<空间名或路径>（空串=解除绑定）。');
             lines.push('新建：dev_project action=create name=…；删除只能由人在面板执行。');
             return Promise.resolve({
-              text: lines.join('\n'), ok: true, root, rootHow: how, projects, rev: board.rev,
+              text: lines.join('\n'), ok: true, root, rootHow: how, projects, workspaces, rev: board.rev,
             });
           }
 
@@ -1072,14 +1248,21 @@ export function apply(ctx) {
               color: a.color !== undefined ? a.color : patch.color,
               description: a.description !== undefined ? a.description : patch.description,
             };
+            /* v3（§11.3）：workspace 可空串（不绑定）或 id/名称/路径（registry 解析） */
+            const workspaceRef = a.workspace !== undefined ? a.workspace : patch.workspace;
+            if (workspaceRef !== undefined) {
+              const ws = resolveWorkspaceParam(ctx, workspaceRef);
+              if (ws !== undefined) input.workspace = ws;
+            }
             return S.mutateBoard(root, (b) => S.createProject(b, input, { by: 'agent' })).then((r) => {
               broadcast(r.board.rev);
               const p = r.out.project;
+              const spaceLabel = S.projectWorkspaceLabel(p) || '未绑定';
               return {
-                text: `已创建项目 ${p.id} · ${p.name}（${S.projectStatusLabel(p.status)}｜${p.color}）\n下一步：dev_item action=create project=${p.id} 在项目里建任务；dev_board project=${p.id} 查看该项目。`,
+                text: `已创建项目 ${p.id} · ${p.name}（${S.projectStatusLabel(p.status)}｜${p.color}｜空间：${spaceLabel}）\n下一步：dev_item action=create project=${p.id} 在项目里建任务；dev_board project=${p.id} 查看该项目。`,
                 ok: true,
                 root,
-                project: p,
+                project: { ...p, workspace: projectWorkspaceOf(p, workspaceMapOf(workspaceList(ctx))) },
                 rev: r.board.rev,
               };
             }).catch((e) => toolFail(e));
@@ -1092,20 +1275,26 @@ export function apply(ctx) {
           for (const k of ['name', 'color', 'description', 'status']) {
             if (a[k] !== undefined && patch[k] === undefined) patch[k] = a[k];
           }
+          /* v3（§11.3）：workspace=空串 → 解除绑定；非空 → registry 解析（不可用 → UNAVAILABLE） */
+          if (a.workspace !== undefined && patch.workspace === undefined) patch.workspace = a.workspace;
           if (!Object.keys(patch).length) {
-            throw U.fail('INVALID_INPUT', 'update 至少提供 name / color / description / status 之一');
+            throw U.fail('INVALID_INPUT', 'update 至少提供 name / color / description / status / workspace 之一');
+          }
+          if (Object.prototype.hasOwnProperty.call(patch, 'workspace')) {
+            patch.workspace = resolveWorkspaceParam(ctx, patch.workspace === undefined ? null : patch.workspace);
           }
           return S.mutateBoard(root, (b) => S.updateProject(b, ref, patch, { by: 'agent' })).then((r) => {
             broadcast(r.board.rev);
             const p = r.out.project;
             const ch = r.out.changed;
+            const spaceLabel = S.projectWorkspaceLabel(p) || '未绑定';
             return {
               text: ch.length
-                ? `已更新项目 ${p.id} · ${p.name}：${ch.join('、')}`
+                ? `已更新项目 ${p.id} · ${p.name}：${ch.join('、')}` + (ch.includes('workspace') ? `\n空间：${spaceLabel}` : '')
                 : `项目 ${p.id} 没有字段变化（未写入）。`,
               ok: true,
               root,
-              project: p,
+              project: { ...p, workspace: projectWorkspaceOf(p, workspaceMapOf(workspaceList(ctx))) },
               changed: ch,
               rev: r.board.rev,
             };
@@ -1151,7 +1340,7 @@ export function apply(ctx) {
           const project = projectRef ? S.resolveProject(board, projectRef, { fuzzy: true }) : null;
 
           if (view === 'projects') {
-            const r = projectsText(board, now, project);
+            const r = projectsText(board, now, project, workspaceList(ctx));
             return Promise.resolve({
               text: r.text, ok: true, root, rootHow: how, rev: board.rev,
               projects: r.projects, stats: S.computeStats(board, now),
@@ -1538,6 +1727,9 @@ export function apply(ctx) {
         '【项目与并行】任务必须归属项目（`dev_project list` 查看；`dev_item create/update` 传 `project`）。',
         '多个项目可同时推进：默认在「全部项目」下工作，需要聚焦时用 `dev_board project=<id或名称>` 过滤；',
         '跨项目排期用 `dev_brief`。新建项目用 `dev_project create`；删除项目只能由人在面板执行。',
+        '',
+        '【项目与空间】项目可绑定 DSH 工作区（空间）：`dev_project update project=<项目> workspace=<空间名或路径>`；',
+        '绑定后派给 agent 的会话会在该空间打开。查看可用空间用 `dev_project list`。',
       ].join('\n'),
     });
     log('系统提示词已注册（order=' + order + '）');

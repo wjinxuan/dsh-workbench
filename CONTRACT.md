@@ -399,3 +399,61 @@ report 语义：
 2. 真机：`dev_project create` 建两个项目 → 分别建任务 → `dev_board project=<名称>` 只出该项目任务 →
    `dev_brief project=<名称>` 抬头正确 → 面板切换器与项目视图显示两项目统计。
 3. 面板截图（stub 数据）：两个项目同时显示、项目视图、项目切换菜单、任务抽屉项目下拉。
+
+---
+
+## 11. v3：项目关联空间（DSH workspace）
+
+> 目标：项目可绑定一个 DSH 工作区（用户口中的「空间」）；项目卡显示空间，派给 agent 的
+> 会话在该空间打开；看板数据仍按当前工作区存放，空间绑定是项目的属性。向后兼容 v2。
+
+### 11.1 数据（version = 3）
+
+Project 新增：
+
+```json
+{
+  "workspaceId": "workspace-id 或空串",
+  "workspacePath": "/abs/path 或空串",
+  "workspaceTitle": "空间显示名或空串"
+}
+```
+
+- `BOARD_VERSION = 3`。v2→v3 迁移：缺失字段补空串，其余不变；任务、注意力、seq 不受影响。
+- 绑定解析（`workspace` 参数）：
+  1) 空串 / null → 清空三个字段；
+  2) `workspaceRegistry.list()` 中按 **id 精确 → path 精确 → title 忽略大小写** 匹配；
+     命中写三字段；未命中抛 `INVALID_INPUT`，提示可用空间（名称/路径）；
+  3) registry 不可用 → 只允许清空；绑定请求返回 `UNAVAILABLE` 并说明原因。
+- `GET /state`：
+  - 每个 project 附 `workspace`：`{id,title,path}` —— 按 `workspaceId` 从 registry 现取，
+    找不到用快照，未绑定为 `null`；
+  - 顶层新增 `workspaces: [{id,title,path,isBoard}]` 与 `workspacesHow`；
+    `isBoard = (path === 当前看板 root)`。
+- `GET /meta` 增加 `workspaceBinding: true`。
+
+### 11.2 handoff（派会话）
+
+- 任务所属项目有 `workspaceId` 且该空间仍在 registry → `sessionController.create({workspaceId})`，
+  `workspaceHow = '项目空间'`；否则沿用现有 `chooseWorkspace(root)`。
+- prompt 中明确「项目：X ｜空间：Y」。
+
+### 11.3 工具
+
+- `dev_project`：`create` / `update` 新增 `workspace`（id / 名称 / 路径；空串=解除绑定）。
+  `list` 每项输出「空间：名称｜路径」，并附「可用空间」清单。
+- `dev_board view=projects` 每项输出空间名。
+- 系统提示词追加：
+
+```text
+【项目与空间】项目可绑定 DSH 工作区（空间）：`dev_project update project=<项目> workspace=<空间名或路径>`；
+绑定后派给 agent 的会话会在该空间打开。查看可用空间用 `dev_project list`。
+```
+
+### 11.4 客户端
+
+- 项目对话框新增「空间」下拉：`不绑定` + `state.workspaces`（`isBoard` 的标「当前空间」）；
+  新建项目默认选当前看板空间（若是注册空间）。
+- 项目卡底部显示空间 chip（`空间名`；未绑定显示「未绑定空间」）。
+- 项目切换器菜单项显示空间名（空间名短时显示）。
+- 顶部无空间选择器；看板始终跟随宿主当前工作区（数据目录），空间绑定只影响项目与派会话。

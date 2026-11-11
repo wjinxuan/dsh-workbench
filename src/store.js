@@ -7,6 +7,8 @@
  * - 所有变更函数入参/出参都是普通对象；非法输入抛 DevworkError（带 code）。
  * - `rev` 每次成功写入 +1；`seq` 自增永不复用（任务 T- / 注意力 A- / 项目 P- 共用一个 seq）。
  * - v2（CONTRACT §10）：projects + tasks[].projectId；v1 板读入即迁移（normalizeBoard，不丢任务）。
+ * - v3（CONTRACT §11）：项目可绑定 DSH 工作区（workspaceId/workspacePath/workspaceTitle 快照）；
+ *   v2 板读入即迁移（补空串，其余不变）。空间解析由 index.js 传入 registry 列表。
  * - `activity` 只保留最近 100 条（按时间顺序追加，最新在末尾）。
  * - 读-改-写通过同进程串行 promise 队列（mutateBoard），避免并发互相覆盖。
  */
@@ -14,7 +16,7 @@
 import { join } from 'node:path';
 import {
   nowIso, localDateStr, weekStartDateStr, weekEndDateStr, formatId, idSeq,
-  trimStr, clampInt, clampNum, isPlainObject, isDateStr, isIso, fail,
+  trimStr, clampInt, clampNum, isPlainObject, isDateStr, isIso, fail, normPath,
   atomicWriteJson, readJsonSafe, TASK_ID_RE, ATTENTION_ID_RE, PROJECT_ID_RE,
 } from './util.js';
 
@@ -22,7 +24,7 @@ import {
 
 export const BOARD_DIR = '.devwork';
 export const BOARD_FILE = 'board.json';
-export const BOARD_VERSION = 2;
+export const BOARD_VERSION = 3;
 
 export const STATUSES = ['todo', 'doing', 'review', 'blocked', 'done', 'canceled'];
 export const TYPES = ['design', 'product', 'dev', 'qa', 'research', 'ops'];
@@ -71,6 +73,10 @@ export const LIMITS = Object.freeze({
   projectName: 80,
   projectDescription: 2000,
   projectsMax: 50,
+  workspaceId: 200,
+  workspaceTitle: 200,
+  workspacePath: 2000,
+  workspaceRef: 500,
 });
 
 export const STATUS_LABELS = Object.freeze({
@@ -155,6 +161,10 @@ export function defaultProject(now) {
     color: DEFAULT_PROJECT_COLOR,
     description: '',
     status: 'active',
+    /* v3（§11.1）：空串 = 未绑定空间 */
+    workspaceId: '',
+    workspacePath: '',
+    workspaceTitle: '',
     createdAt: at,
     updatedAt: at,
   };
@@ -259,7 +269,10 @@ export function isProjectColor(v) {
 export function projectDefaults() {
   return {
     id: '', name: '', color: DEFAULT_PROJECT_COLOR, description: '',
-    status: 'active', createdAt: '', updatedAt: '',
+    status: 'active',
+    /* v3（§11.1）：空间快照，空串合法 */
+    workspaceId: '', workspacePath: '', workspaceTitle: '',
+    createdAt: '', updatedAt: '',
   };
 }
 
@@ -273,6 +286,14 @@ export function normalizeProject(raw, opts = {}) {
   p.color = isProjectColor(r.color) ? String(r.color).trim() : DEFAULT_PROJECT_COLOR;
   p.description = trimStr(r.description, LIMITS.projectDescription);
   p.status = PROJECT_STATUSES.includes(r.status) ? r.status : 'active';
+  /* v3（§11.1）：三字段一律 trim，空串合法；id 为空时 path/title 一并清空（避免脏快照） */
+  p.workspaceId = trimStr(r.workspaceId, LIMITS.workspaceId);
+  p.workspacePath = trimStr(r.workspacePath, LIMITS.workspacePath);
+  p.workspaceTitle = trimStr(r.workspaceTitle, LIMITS.workspaceTitle);
+  if (!p.workspaceId) {
+    p.workspacePath = '';
+    p.workspaceTitle = '';
+  }
   p.createdAt = normIsoOrEmpty(r.createdAt) || now;
   p.updatedAt = normIsoOrEmpty(r.updatedAt) || p.createdAt;
   return p;
@@ -297,6 +318,112 @@ export function projectListHint(board) {
   const arr = Array.isArray(board && board.projects) ? board.projects : [];
   if (!arr.length) return '（当前没有项目，可用 dev_project create 新建）';
   return arr.map((p) => `${p.id} ${p.name}`).join('、');
+}
+
+/* ---------------- 空间（CONTRACT §11） ---------------- */
+
+/**
+ * 项目已绑定的空间快照：`{id,title,path}`；未绑定返回 null。
+ * 纯读，不做 registry 校验（是否仍存在由调用方按当前 registry 现取）。
+ */
+export function projectWorkspaceSnapshot(project) {
+  if (!isPlainObject(project)) return null;
+  const id = trimStr(project.workspaceId, LIMITS.workspaceId);
+  if (!id) return null;
+  return {
+    id,
+    title: trimStr(project.workspaceTitle, LIMITS.workspaceTitle),
+    path: trimStr(project.workspacePath, LIMITS.workspacePath),
+  };
+}
+
+/** 项目空间显示名（title → path → id）；未绑定返回空串。 */
+export function projectWorkspaceLabel(project) {
+  const sp = projectWorkspaceSnapshot(project);
+  if (!sp) return '';
+  return sp.title || sp.path || sp.id;
+}
+
+/**
+ * 解析空间引用（CONTRACT §11.1）：id 精确 → path 精确 → title 忽略大小写 / 首尾空格。
+ * registry 列表由 index.js 传入（store 不直接依赖宿主服务）；未命中返回 null。
+ * @param {Array<{id:string,title?:string,path?:string}>} registryList
+ * @param {string} ref
+ * @returns {{id:string,title:string,path:string}|null}
+ */
+export function resolveWorkspaceRef(registryList, ref) {
+  const raw = trimStr(ref, LIMITS.workspaceRef);
+  if (!raw) return null;
+  const items = (Array.isArray(registryList) ? registryList : [])
+    .filter((w) => isPlainObject(w))
+    .map((w) => ({
+      id: trimStr(w.id, LIMITS.workspaceId),
+      title: trimStr(w.title, LIMITS.workspaceTitle),
+      path: trimStr(w.path, LIMITS.workspacePath),
+    }))
+    .filter((w) => w.id);
+  if (!items.length) return null;
+
+  const byId = items.find((w) => w.id === raw);
+  if (byId) return byId;
+  const byPath = items.find((w) => w.path && w.path === raw);
+  if (byPath) return byPath;
+  /* path 写法差异（符号链接 / 末尾斜杠）：按规范化路径再精确比一次 */
+  const rawPath = normPath(raw);
+  if (rawPath) {
+    const byNormPath = items.find((w) => w.path && normPath(w.path) === rawPath);
+    if (byNormPath) return byNormPath;
+  }
+  const kw = raw.toLowerCase();
+  return items.find((w) => w.title && w.title.trim().toLowerCase() === kw) || null;
+}
+
+/** 提示用：可用空间清单（名称｜路径）。 */
+export function workspaceListHint(registryList) {
+  const items = (Array.isArray(registryList) ? registryList : []).filter((w) => isPlainObject(w));
+  if (!items.length) return '（workspaceRegistry 未注册任何工作区）';
+  return items
+    .map((w) => `${trimStr(w.title, LIMITS.workspaceTitle) || trimStr(w.id, LIMITS.workspaceId)}（${trimStr(w.path, LIMITS.workspacePath)}）`)
+    .join('、');
+}
+
+/**
+ * 归一化写入用的 workspace 值（CONTRACT §11.1 第 3 层）：
+ * - undefined → undefined（字段未提供，保持原绑定 / 不绑定）；
+ * - null / 空串 → null（清空三字段）；
+ * - 空间对象 `{id,path?,title?}` → `{id,title,path}`（调用方解析后传入）；
+ * - 非空字符串 → INVALID_INPUT（必须先经 resolveWorkspaceRef 解析，store 不碰 registry）。
+ * @returns {{id:string,title:string,path:string}|null|undefined}
+ * @throws {DevworkError}
+ */
+export function normalizeWorkspaceBinding(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value === 'string') {
+    if (!trimStr(value, LIMITS.workspaceRef)) return null;
+    throw fail('INVALID_INPUT', 'workspace 必须先解析为空间对象再写入（可用 resolveWorkspaceRef(registry.list(), 引用)）');
+  }
+  if (!isPlainObject(value)) throw fail('INVALID_INPUT', 'workspace 必须是空间对象 / 空串 / null');
+  const id = trimStr(value.id, LIMITS.workspaceId);
+  if (!id) throw fail('INVALID_INPUT', 'workspace 对象缺少 id');
+  return {
+    id,
+    title: trimStr(value.title, LIMITS.workspaceTitle),
+    path: trimStr(value.path, LIMITS.workspacePath),
+  };
+}
+
+/** 把空间快照写进项目；返回三字段是否真正变化。 */
+function setProjectWorkspace(project, workspace) {
+  const next = workspace || { id: '', title: '', path: '' };
+  const id = trimStr(next.id, LIMITS.workspaceId);
+  const path = id ? trimStr(next.path, LIMITS.workspacePath) : '';
+  const title = id ? trimStr(next.title, LIMITS.workspaceTitle) : '';
+  const changed = project.workspaceId !== id || project.workspacePath !== path || project.workspaceTitle !== title;
+  project.workspaceId = id;
+  project.workspacePath = path;
+  project.workspaceTitle = title;
+  return changed;
 }
 
 /**
@@ -424,6 +551,8 @@ export function normalizeSettings(raw) {
  * 规范化整板（读盘后调用）：修 id、修 seq、裁剪 activity。
  * v1 → v2 迁移（CONTRACT §10.1）：projects 缺失/为空 → 默认项目；
  * 任务 projectId 缺失/非法/指向不存在项目 → 改归默认项目；显式空串保留为「未归属」。
+ * v2 → v3 迁移（CONTRACT §11.1）：Project 缺失 workspaceId/workspacePath/workspaceTitle → 补空串；
+ * 任务、注意力、seq 不受影响。
  */
 export function normalizeBoard(raw, workspace) {
   const b = emptyBoard(workspace);
@@ -613,6 +742,8 @@ function nextProjectId(board) {
 
 /**
  * 新建项目：名称必填且唯一（忽略大小写/首尾空格），≤50 个，颜色缺省 #5B7CFA。
+ * v3（§11.1）：`input.workspace` 可为空间对象（调用方按 registry 解析）或空串/null（不绑定）；
+ * 非空字符串由 store 拒绝（必须先解析），保证落盘的是 `{id,path,title}` 快照。
  * @returns {{project:object}}
  */
 export function createProject(board, input, opts = {}) {
@@ -631,8 +762,11 @@ export function createProject(board, input, opts = {}) {
   if (input.status !== undefined && input.status !== null && !PROJECT_STATUSES.includes(input.status)) {
     throw fail('INVALID_INPUT', '非法项目状态：' + String(input.status));
   }
+  /* v3（§11.1）：空串/null = 不绑定；对象 = 调用方已解析的空间快照 */
+  const workspace = normalizeWorkspaceBinding(input.workspace);
   const now = nowIso();
   const project = normalizeProject({ ...input, name, id: nextProjectId(board) }, { now });
+  if (workspace !== undefined) setProjectWorkspace(project, workspace);
   project.createdAt = now;
   project.updatedAt = now;
   board.projects.push(project);
@@ -672,6 +806,11 @@ export function updateProject(board, ref, patch, opts = {}) {
       throw fail('INVALID_INPUT', '非法项目状态：' + String(patch.status || '(空)'));
     }
     if (patch.status !== project.status) { project.status = patch.status; changed.push('status'); }
+  }
+  /* v3（§11.1）：workspace 空串/null = 解除绑定；对象 = 调用方解析后的空间快照 */
+  if (Object.prototype.hasOwnProperty.call(patch, 'workspace')) {
+    const ws = normalizeWorkspaceBinding(patch.workspace === undefined ? null : patch.workspace);
+    if (setProjectWorkspace(project, ws)) changed.push('workspace');
   }
 
   if (changed.length) {
@@ -1468,7 +1607,17 @@ export function buildBrief(board, opts = {}) {
     window: period === 'week' ? { start: weekStart, end: weekEnd } : { start: today, end: today },
     generatedAt: nowIso(),
     rev: clampInt(board && board.rev, 0, 1e9, 0),
-    project: project ? { id: project.id, name: project.name, color: project.color, status: project.status } : null,
+    project: project
+      ? {
+          id: project.id,
+          name: project.name,
+          color: project.color,
+          status: project.status,
+          /* v3（§11）：项目绑定的空间快照（未绑定为 null） */
+          workspace: projectWorkspaceSnapshot(project),
+          workspaceName: projectWorkspaceLabel(project),
+        }
+      : null,
     projectName: project ? project.name : '',
     focus,
     stats: computeStatsOf(scopedTasks, now),
@@ -1523,7 +1672,12 @@ function fmtTaskBlock(task, project) {
   lines.push(`【任务】${task.id} · ${task.title}`);
   lines.push(`状态：${statusLabel(task.status)}｜类型：${typeLabel(task.type)}｜优先级：${task.priority}｜负责人：${task.owner || '我'}`);
   const projectLabel = projectLabelOf(project);
-  if (projectLabel) lines.push('项目：' + projectLabel);
+  if (projectLabel) {
+    /* v3（§11.2）：派会话的 prompt 明确「项目：X｜空间：Y」 */
+    const sp = projectWorkspaceSnapshot(project);
+    const spaceLabel = sp ? (sp.title || sp.path || sp.id) : '未绑定';
+    lines.push('项目：' + projectLabel + '｜空间：' + spaceLabel);
+  }
   const meta = [];
   if (task.due) meta.push('到期 ' + task.due);
   if (task.estimate) meta.push('预估 ' + task.estimate + 'h');
@@ -1577,7 +1731,7 @@ const REPORT_RULE = [
  * handoff 提示词：按 mode 生成执行会话的初始指令。
  * @param {object|null} task 任务（可为 null：不指定任务）
  * @param {'work'|'review'|'plan'} mode
- * @param {object|string|null} [project] 项目（对象或名称；给了就在 prompt 里带项目名）
+ * @param {object|string|null} [project] 项目（对象或名称；给了就在 prompt 里带项目名与空间名，v3 §11.2）
  */
 export function HANDOFF_PROMPT(task, mode, project) {
   const m = HANDOFF_MODES.includes(mode) ? mode : 'work';
@@ -1590,6 +1744,9 @@ export function HANDOFF_PROMPT(task, mode, project) {
     if (projectLabel) {
       lines.push('');
       lines.push('【项目】' + projectLabel);
+      const sp = projectWorkspaceSnapshot(project);
+      const spaceLabel = sp ? (sp.title || sp.path || sp.id) : '未绑定';
+      lines.push('【空间】' + spaceLabel + (sp && sp.title && sp.path ? '（' + sp.path + '）' : ''));
       lines.push('需要只看该项目时用 `dev_board`（view=board, project=' + projectLabel + '）。');
     }
     lines.push('');
