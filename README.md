@@ -67,6 +67,7 @@ plugin_manager action=install_bundle target=<本仓库绝对路径>
 安装后左侧栏出现「开发工作台」图标；若图标未出现，重启宿主并刷新页面。
 
 - 源码 / Issue：<https://github.com/wjinxuan/dsh-workbench>
+- 市场收录进度：[MARKETPLACE.md](MARKETPLACE.md)
 - 许可证：MIT · 变更记录：[CHANGELOG.md](CHANGELOG.md)
 
 ## 数据

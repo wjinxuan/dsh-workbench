@@ -10,12 +10,25 @@
 
 | 市场 | 入口 | 状态 |
 |---|---|---|
-| DSH Market（dshplugin.io） | `tjsdyy/dshplugin` Issue（label `plugin-submission`） | 见 Issue |
-| DSH STORE（dsh.store） | `AI-Scarlett/DSH-Store` Issue 模板「提交 DSH 插件」 | 见 Issue |
-| WhaleHub | `vvlife/whalehub-dsh` Issue 模板「🧩 提交插件」 | 见 Issue |
-| awesome-dsh-plugin | 收录 PR（仓库需创建满 1 天） | 待仓库满 1 天后提交 |
+| DSH STORE（dsh.store） | https://github.com/AI-Scarlett/DSH-Store/issues/1865 | 已提交；机器人自动固定 commit 并做静态预检，等待 Catalog 审核 |
+| WhaleHub | https://github.com/vvlife/whalehub-dsh/issues/101 | 已提交，等待维护者审核 |
+| DSH Market（dshplugin.io） | https://github.com/tjsdyy/dshplugin/issues/46 | 已提交（该仓库没有 `plugin-submission` 标签，按普通 Issue 提交） |
+| awesome-dsh-plugin | fork 分支 `wjinxuan/awesome-dsh-plugin:add-dsh-workbench` 已放好条目 | 仓库需创建满 1 天（2026-11-12 15:12 之后）再开 PR |
 
-## awesome-dsh-plugin 收录条目（满 1 天后提交 PR）
+## awesome-dsh-plugin PR（满 1 天后执行）
+
+分支已就绪：`wjinxuan/awesome-dsh-plugin:add-dsh-workbench`（含
+`data/plugins/wjinxuan__dsh-workbench.yml`）。仓库创建于 2026-11-11 15:12，
+满足「满 1 天」后执行：
+
+```bash
+gh pr create --repo awesome-dsh-plugin/awesome-dsh-plugin \
+  --head wjinxuan:add-dsh-workbench \
+  --title "Add wjinxuan/dsh-workbench" \
+  --body "Adds \`wjinxuan/dsh-workbench\` (\`dsh-devwork\`): a multi-project dev workbench for DeepSeek Harness. Public repo, MIT, \`dsh.bundle.patch\` present, no lifecycle scripts, real working code; verified on DSH Desktop 0.2.2-rc.1."
+```
+
+## 条目内容
 
 提交到 `awesome-dsh-plugin/awesome-dsh-plugin`，新增
 `data/plugins/wjinxuan__dsh-workbench.yml`：
