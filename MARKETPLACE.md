@@ -10,7 +10,7 @@
 
 | 市场 | 入口 | 状态 |
 |---|---|---|
-| DSH STORE（dsh.store） | https://github.com/AI-Scarlett/DSH-Store/issues/1865 | 已提交；机器人自动固定 commit 并做静态预检，等待 Catalog 审核 |
+| DSH STORE（dsh.store） | https://github.com/AI-Scarlett/DSH-Store/issues/1865 | 自动预检**通过**：固定 commit `3b67606`、`dsh-devwork@0.2.0`、生命周期脚本无、安全启发式 8/8 通过（Critical 0 / Warning 0）；等待 8 小时 Catalog 策略复核与上架 |
 | WhaleHub | https://github.com/vvlife/whalehub-dsh/issues/101 | 已提交，等待维护者审核 |
 | DSH Market（dshplugin.io） | https://github.com/tjsdyy/dshplugin/issues/46 | 已提交（该仓库没有 `plugin-submission` 标签，按普通 Issue 提交） |
 | awesome-dsh-plugin | fork 分支 `wjinxuan/awesome-dsh-plugin:add-dsh-workbench` 已放好条目 | 仓库需创建满 1 天（2026-11-12 15:12 之后）再开 PR |

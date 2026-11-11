@@ -1,5 +1,7 @@
 # 开发工作台（dsh-devwork）
 
+[![ci](https://github.com/wjinxuan/dsh-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/wjinxuan/dsh-workbench/actions/workflows/ci.yml)
+
 DeepSeek Harness 的单机插件：在左侧栏加一个「开发工作台」，用项目组织你自己当前的设计、
 产品逻辑、开发、测试、调研、运维任务；**多个项目可以同时推进**，状态实时同步（SSE + 轮询兜底），
 agent 通过工具读写同一份数据并用 `dev_item` 回报进展。
