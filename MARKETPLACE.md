@@ -1,6 +1,6 @@
 # 市场收录（Marketplace listings）
 
-> 当前版本：**0.3.0**（项目关联 DSH 空间）。DSH STORE 会对每次新 commit 重新做固定源预检与 8 小时 Catalog 策略复核。
+> 当前版本：**0.4.0**（项目关联 DSH 空间 + 三套可选主题）。DSH STORE 会对每次新 commit 重新做固定源预检与 8 小时 Catalog 策略复核。
 
 - 仓库：<https://github.com/wjinxuan/dsh-workbench>
 - 包名：`dsh-devwork`（安装命令 `dsh plugin --profile web add github:wjinxuan/dsh-workbench`）

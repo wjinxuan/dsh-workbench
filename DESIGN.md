@@ -96,6 +96,20 @@
 - 键盘移动：卡片菜单「移到 …」列出全部允许状态（服务端状态机同源）。
 - 验收与删除：抽屉内二次确认；agent 无这两条路径（红线）。
 
+## 7. 主题系统（v0.4）
+
+- 四个选项：**跟随宿主**（默认，沿用宿主 token）、**海洋**、**日落**、**森林**。
+- 实现：`.dw-root[data-dw-theme][data-dw-tone]` 上覆盖 `--dw-accent / --dw-accent-2 /
+  --dw-on-accent / --dw-brand / --dw-on-brand / --dw-accent-soft / --dw-focus`；其余 token 仍取宿主。
+- **明暗自适应**：用 `getComputedStyle(documentElement)` 读 `--dsw-alias-label-primary` 的亮度，
+  判定 `dark/light` 后套对应一套强调色（深底用亮强调色 + 深色按钮字，浅底用深强调色 + 白字），
+  并监听 DOM 属性变化 + 每 5s 复查一次。
+- 主题只影响强调色与氛围：页头/主区渐变、品牌渐变标题、主按钮、活动页签、进度条、
+  状态色列头/列背景、统计图标、项目卡悬停光晕、表头与抽屉轻着色；语义色（成功/警告/危险）不变。
+- 选择持久化：`localStorage['dsh-devwork:theme']`；未知值回退 `host`。
+- 无障碍：对比度按 A/AA 选取（深底亮色配深字，浅底深色配白字）；`prefers-reduced-motion` 下动效关闭；
+  主题按钮有 `aria-pressed`。
+
 ## 6. 自检清单（交付前）
 
 - [x] 无 emoji 作图标，统一 24×24 stroke 1.8 SVG（自绘，无外部依赖）

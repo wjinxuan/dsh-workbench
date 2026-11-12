@@ -81,6 +81,8 @@ window.__ModuleLoader__.load({
       space: '空间', spaces: '空间', bindSpace: '关联空间', noSpace: '未绑定空间',
       spaceUnavailable: '空间不可用', currentSpace: '当前空间', spaceHint: '派给 agent 的会话会在该空间打开',
       projectSpace: '项目空间', spacePath: '路径', boardSpace: '看板空间',
+      theme: '主题', themeHost: '跟随宿主', themeOcean: '海洋', themeSunset: '日落', themeForest: '森林',
+      themeHint: '只改变强调色与背景氛围，明暗仍跟随宿主；选择会记住',
     };
     const EN = {
       brand: 'Dev workbench', tagline: 'Design · product · build, in one board',
@@ -132,6 +134,8 @@ window.__ModuleLoader__.load({
       space: 'Space', spaces: 'Spaces', bindSpace: 'Bind space', noSpace: 'No space',
       spaceUnavailable: 'Space unavailable', currentSpace: 'Current space', spaceHint: 'Agent sessions open in this space',
       projectSpace: 'Project space', spacePath: 'Path', boardSpace: 'Board space',
+      theme: 'Theme', themeHost: 'Host', themeOcean: 'Ocean', themeSunset: 'Sunset', themeForest: 'Forest',
+      themeHint: 'Changes accents and ambience only; light/dark still follows the host. Remembered.',
     };
     /* 面板文案以中文为主（列名/类型名等枚举也为中文）；EN 词表保留给后续 i18n。 */
     const DICT = ZH;
@@ -168,6 +172,57 @@ window.__ModuleLoader__.load({
     const PRIORITY_MAP = PRIORITIES.reduce((m, x) => (m[x.key] = x, m), {});
 
     const PROJECT_COLORS = ['#5B7CFA', '#8B5CF6', '#0EA5E9', '#10B981', '#F59E0B', '#EF4444', '#EC4899', '#64748B'];
+
+    /* 可选主题：host=跟随宿主；其余三套为强调色/氛围配色（明暗仍由宿主决定） */
+    const THEME_KEY = 'dsh-devwork:theme';
+    const THEMES = [
+      { key: 'host', labelKey: 'themeHost', swatch: '#5B7CFA' },
+      { key: 'ocean', labelKey: 'themeOcean', swatch: '#0EA5E9' },
+      { key: 'sunset', labelKey: 'themeSunset', swatch: '#F97316' },
+      { key: 'forest', labelKey: 'themeForest', swatch: '#22C55E' },
+    ];
+    function readStoredTheme() {
+      try { const v = localStorage.getItem(THEME_KEY); return THEMES.some((x) => x.key === v) ? v : 'host'; } catch (e) { return 'host'; }
+    }
+    function storeTheme(v) { try { localStorage.setItem(THEME_KEY, v); } catch (e) { /* ignore */ } }
+
+    /* 读取宿主当前明暗（用 label-primary 的亮度判断），主题据此选择深浅两套强调色 */
+    function detectHostTone() {
+      try {
+        const raw = String(getComputedStyle(document.documentElement).getPropertyValue('--dsw-alias-label-primary') || '').trim();
+        let r = NaN; let g = NaN; let b = NaN;
+        const m = raw.match(/^rgba?\(([^)]+)\)/i);
+        if (m) { const parts = m[1].split(',').map((x) => parseFloat(x)); r = parts[0]; g = parts[1]; b = parts[2]; }
+        else if (/^#[0-9a-f]{6}$/i.test(raw)) { r = parseInt(raw.slice(1, 3), 16); g = parseInt(raw.slice(3, 5), 16); b = parseInt(raw.slice(5, 7), 16); }
+        if ([r, g, b].every((x) => Number.isFinite(x))) {
+          const lum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+          return lum > 0.55 ? 'light' : 'dark';
+        }
+      } catch (e) { /* ignore */ }
+      return 'dark';
+    }
+    function useHostTone() {
+      const [tone, setTone] = useState(detectHostTone);
+      useEffect(() => {
+        const update = () => setTone(detectHostTone());
+        update();
+        let mo = null;
+        try {
+          mo = new MutationObserver(update);
+          mo.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme'] });
+          if (document.body) mo.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+        } catch (e) { /* ignore */ }
+        const mq = typeof matchMedia === 'function' ? matchMedia('(prefers-color-scheme: dark)') : null;
+        if (mq && mq.addEventListener) mq.addEventListener('change', update);
+        const tid = setInterval(update, 5000);
+        return () => {
+          try { if (mo) mo.disconnect(); } catch (e) { /* ignore */ }
+          if (mq && mq.removeEventListener) mq.removeEventListener('change', update);
+          clearInterval(tid);
+        };
+      }, []);
+      return tone;
+    }
     const PROJECT_STATUS = [
       { key: 'active', label: '进行中', color: '#059669' },
       { key: 'paused', label: '已暂停', color: '#D97706' },
@@ -940,6 +995,7 @@ window.__ModuleLoader__.load({
             const isOver = overCol === col.key;
             return h('section', {
               key: col.key, className: 'dw-col' + (isOver ? ' over' : '') + (col.key === 'doing' ? ' col-doing' : ''),
+              style: { '--dw-col-color': col.color },
               onDragEnter: (e) => { e.preventDefault(); setOverCol(col.key); },
               onDragOver: (e) => { e.preventDefault(); try { e.dataTransfer.dropEffect = 'move'; } catch (err) { /* ignore */ } },
               onDragLeave: (e) => { if (!e.currentTarget.contains(e.relatedTarget)) setOverCol(''); },
@@ -1412,6 +1468,7 @@ window.__ModuleLoader__.load({
     /* ---------------- 设置 ---------------- */
     function SettingsPopover(props) {
       const s = props.settings || {};
+      const theme = props.theme || 'host';
       const [wip, setWip] = useState(String(s.wipLimit || 3));
       const [stale, setStale] = useState(String(s.staleDays || 3));
       const [showCanceled, setShowCanceled] = useState(!!s.showCanceled);
@@ -1432,6 +1489,14 @@ window.__ModuleLoader__.load({
       });
       return h('div', { className: 'dw-pop', ref: ref, role: 'dialog', 'aria-label': t('settingsTitle') },
         h('div', { className: 'dw-pop-title' }, t('settingsTitle')),
+        h('div', { className: 'dw-field' }, h('span', { className: 'dw-field-label' }, t('theme')),
+          h('div', { className: 'dw-theme-grid', role: 'group', 'aria-label': t('theme') },
+            THEMES.map((th) => h('button', {
+              key: th.key, type: 'button', className: 'dw-theme-opt' + (theme === th.key ? ' on' : ''),
+              'aria-pressed': theme === th.key, onClick: () => props.onTheme(th.key),
+            }, h('span', { className: 'dw-theme-dot', style: { background: th.swatch }, 'aria-hidden': 'true' }),
+              h('span', null, t(th.labelKey))))),
+          h('div', { className: 'dw-theme-hint' }, t('themeHint'))),
         h('label', { className: 'dw-field' }, h('span', { className: 'dw-field-label' }, t('wipLimit')),
           h('input', { type: 'number', min: 1, max: 20, value: wip, onChange: (e) => setWip(e.target.value) })),
         h('label', { className: 'dw-field' }, h('span', { className: 'dw-field-label' }, t('staleDays')),
@@ -1459,6 +1524,9 @@ window.__ModuleLoader__.load({
       const [settingsOpen, setSettingsOpen] = useState(false);
       const [projectFilter, setProjectFilterState] = useState(readStoredProject);
       const [projectDialog, setProjectDialog] = useState(null);
+      const [theme, setThemeState] = useState(readStoredTheme);
+      const tone = useHostTone();
+      const setTheme = useCallback((v) => { setThemeState(v); storeTheme(v); }, []);
       const now = useNow(TICK_MS);
       const setProjectFilter = useCallback((id) => { setProjectFilterState(id || ''); storeProject(id || ''); }, []);
 
@@ -1588,7 +1656,10 @@ window.__ModuleLoader__.load({
           h(IconBtn, { name: 'refresh', title: t('refresh'), onClick: () => wb.refresh(false) }),
           h('div', { className: 'dw-settings-wrap' },
             h(IconBtn, { name: 'gear', title: t('settings'), active: settingsOpen, onClick: () => setSettingsOpen(!settingsOpen) }),
-            settingsOpen && data ? h(SettingsPopover, { settings: data.settings, root: data.root, onClose: () => setSettingsOpen(false), onSave: saveSettings }) : null),
+            settingsOpen && data ? h(SettingsPopover, {
+              settings: data.settings, root: data.root, theme: theme, onTheme: setTheme,
+              onClose: () => setSettingsOpen(false), onSave: saveSettings,
+            }) : null),
           h(Btn, { kind: 'primary', small: true, icon: 'plus', onClick: () => setCreateOpen(true) }, t('newTask'))));
 
       let body = null;
@@ -1624,7 +1695,7 @@ window.__ModuleLoader__.load({
         body = h(ActivityView, { data: data, projectFilter: projectFilter, onOpen: (id) => setOpenId(id), onRefresh: () => wb.refresh(false) });
       }
 
-      return h('div', { className: 'dw-root' },
+      return h('div', { className: 'dw-root', 'data-dw-theme': theme, 'data-dw-tone': tone },
         header,
         wb.err && data ? h('div', { className: 'dw-banner', role: 'status' }, h(Icon, { name: 'alert', size: 14 }), wb.err,
           h('button', { type: 'button', className: 'dw-linkish', onClick: () => wb.refresh(false) }, t('retry'))) : null,
@@ -1667,13 +1738,16 @@ window.__ModuleLoader__.load({
   --dw-brand:var(--dsw-alias-brand-primary,#4d6bfe);
   --dw-on-brand:var(--dsw-alias-label-primary-inverted,#fff);
   --dw-accent:var(--dsw-alias-state-business-primary,#4d6bfe);
+  --dw-accent-2:var(--dsw-alias-brand-primary,#4d6bfe);
+  --dw-accent-soft:color-mix(in srgb,var(--dw-accent) 12%,transparent);
+  --dw-on-accent:var(--dsw-alias-label-primary-inverted,#fff);
   --dw-danger:var(--dsw-alias-state-error-primary,#d92d20);
   --dw-warn:var(--dsw-alias-state-warn-primary,#e58b00);
   --dw-success:var(--dsw-alias-state-success-primary,#1a7f45);
   --dw-idle:var(--dsw-alias-state-idle-primary,#cfd3d6);
   --dw-hover:var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.04));
   --dw-active:var(--dsw-alias-interactive-bg-active,rgba(0,0,0,.07));
-  --dw-focus:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary,#4d6bfe) 34%,transparent);
+  --dw-focus:0 0 0 2px color-mix(in srgb,var(--dw-accent) 38%,transparent);
   --dw-radius:var(--dsw-radius-md,12px);
   --dw-radius-sm:var(--dsw-radius-sm,8px);
   --dw-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -1683,6 +1757,60 @@ window.__ModuleLoader__.load({
   font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
 }
 .dw-root *{box-sizing:border-box}
+
+/* ---- 主题套色（明暗由宿主决定，主题只换强调色/氛围） ---- */
+.dw-root[data-dw-tone="dark"][data-dw-theme="ocean"]{
+  --dw-accent:#38BDF8;--dw-accent-2:#22D3EE;--dw-on-accent:#06283D;
+  --dw-brand:#38BDF8;--dw-on-brand:#06283D;--dw-accent-soft:rgba(56,189,248,.16);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#38BDF8 46%,transparent);
+}
+.dw-root[data-dw-tone="light"][data-dw-theme="ocean"]{
+  --dw-accent:#0369A1;--dw-accent-2:#0891B2;--dw-on-accent:#fff;
+  --dw-brand:#0369A1;--dw-on-brand:#fff;--dw-accent-soft:rgba(3,105,161,.12);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#0369A1 40%,transparent);
+}
+.dw-root[data-dw-tone="dark"][data-dw-theme="sunset"]{
+  --dw-accent:#FB923C;--dw-accent-2:#FB7185;--dw-on-accent:#431407;
+  --dw-brand:#FB923C;--dw-on-brand:#431407;--dw-accent-soft:rgba(251,146,60,.16);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#FB923C 46%,transparent);
+}
+.dw-root[data-dw-tone="light"][data-dw-theme="sunset"]{
+  --dw-accent:#C2410C;--dw-accent-2:#E11D48;--dw-on-accent:#fff;
+  --dw-brand:#C2410C;--dw-on-brand:#fff;--dw-accent-soft:rgba(194,65,12,.12);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#C2410C 40%,transparent);
+}
+.dw-root[data-dw-tone="dark"][data-dw-theme="forest"]{
+  --dw-accent:#34D399;--dw-accent-2:#2DD4BF;--dw-on-accent:#04291F;
+  --dw-brand:#34D399;--dw-on-brand:#04291F;--dw-accent-soft:rgba(52,211,153,.16);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#34D399 46%,transparent);
+}
+.dw-root[data-dw-tone="light"][data-dw-theme="forest"]{
+  --dw-accent:#047857;--dw-accent-2:#0D9488;--dw-on-accent:#fff;
+  --dw-brand:#047857;--dw-on-brand:#fff;--dw-accent-soft:rgba(4,120,87,.12);
+  --dw-focus:0 0 0 2px color-mix(in srgb,#047857 40%,transparent);
+}
+/* 页头/主区氛围色 */
+.dw-head{background:linear-gradient(180deg,color-mix(in srgb,var(--dw-accent) 7%,transparent),transparent 120%)}
+.dw-main{background:linear-gradient(180deg,color-mix(in srgb,var(--dw-accent) 5%,transparent),transparent 240px)}
+.dw-head::after{background:linear-gradient(90deg,var(--dw-accent),var(--dw-accent-2) 42%,transparent 78%)}
+.dw-brand-title{background:linear-gradient(92deg,var(--dw-text),var(--dw-accent) 120%);-webkit-background-clip:text;background-clip:text;color:transparent}
+.dw-brand-mark{color:var(--dw-accent);background:var(--dw-accent-soft);border-color:color-mix(in srgb,var(--dw-accent) 32%,transparent)}
+.dw-tab.on{color:var(--dw-accent);background:color-mix(in srgb,var(--dw-accent) 12%,var(--dw-surface))}
+.dw-stat-icon{background:var(--dw-accent-soft);color:var(--dw-accent)}
+.dw-sec-title svg{color:var(--dw-accent)}
+.dw-card:hover{border-color:color-mix(in srgb,var(--dw-accent) 38%,var(--dw-border-2));box-shadow:0 3px 12px color-mix(in srgb,var(--dw-accent) 12%,transparent)}
+.dw-bar-fill{background:linear-gradient(90deg,var(--dw-accent),var(--dw-accent-2))}
+.dw-btn-primary{background:linear-gradient(135deg,var(--dw-brand),color-mix(in srgb,var(--dw-brand) 72%,var(--dw-accent-2)));color:var(--dw-on-brand)}
+.dw-btn-primary:hover{filter:brightness(1.07)}
+.dw-col{background:color-mix(in srgb,var(--dw-col-color,var(--dw-surface-2)) 9%,var(--dw-surface))}
+.dw-col-head{background:color-mix(in srgb,var(--dw-col-color,var(--dw-surface-2)) 10%,transparent)}
+.dw-panel{background:color-mix(in srgb,var(--dw-accent) 3%,var(--dw-surface))}
+.dw-table th{background:color-mix(in srgb,var(--dw-accent) 6%,var(--dw-surface-2))}
+.dw-drawer{background:linear-gradient(180deg,color-mix(in srgb,var(--dw-accent) 4%,var(--dw-surface)),var(--dw-surface) 200px)}
+.dw-projcard:hover{border-color:color-mix(in srgb,var(--dw-proj-color) 55%,var(--dw-border-2));box-shadow:0 5px 16px color-mix(in srgb,var(--dw-proj-color) 18%,transparent)}
+.dw-projswitch{border-color:color-mix(in srgb,var(--dw-accent) 26%,var(--dw-border))}
+.dw-filter.on{background:var(--dw-accent-soft)}
+.dw-ring circle:last-of-type{stroke:var(--dw-accent)}
 .dw-root button{font-family:inherit}
 .dw-root :focus-visible{outline:none;box-shadow:var(--dw-focus);border-radius:6px}
 .dw-root ::-webkit-scrollbar{width:8px;height:8px}
@@ -2017,6 +2145,14 @@ window.__ModuleLoader__.load({
 .dw-pop-root{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--dw-text-3);word-break:break-all}
 .dw-pop-root code{font-family:var(--dw-mono);font-size:10.5px}
 .dw-pop-actions{display:flex;justify-content:flex-end}
+.dw-theme-grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.dw-theme-opt{display:flex;align-items:center;gap:6px;height:30px;padding:0 8px;border-radius:7px;cursor:pointer;
+  border:1px solid var(--dw-border);background:var(--dw-surface);color:var(--dw-text-2);font-size:11.5px;font-weight:540;
+  transition:border-color .15s ease,background .15s ease}
+.dw-theme-opt:hover{background:var(--dw-hover)}
+.dw-theme-opt.on{border-color:color-mix(in srgb,var(--dw-accent) 46%,transparent);background:var(--dw-accent-soft);color:var(--dw-accent)}
+.dw-theme-dot{width:12px;height:12px;border-radius:50%;flex:0 0 auto;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
+.dw-theme-hint{font-size:10.5px;color:var(--dw-text-3);line-height:1.5}
 
 /* 项目切换器 */
 .dw-projswitch-wrap{position:relative;flex:0 0 auto}

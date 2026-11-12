@@ -20,6 +20,8 @@ agent 通过工具读写同一份数据并用 `dev_item` 回报进展。
 - **活动**：按天分组的时间线，人 / agent / 系统分别标记；按当前项目过滤。
 - **任务详情**：标题、所属项目、类型、状态、优先级、负责人、到期、估时/已用、进度、描述、
   标签、检查清单、交付物、本任务活动流；一键「交给 agent 执行 / 复核 / 拆解」发起会话。
+- **主题**：跟随宿主（默认）+ 三套彩色主题——海洋 / 日落 / 森林；设置面板里切换，选择会记住；
+  明暗仍跟随宿主自动适配（主题只改强调色与氛围）。
 - **实时**：`EventSource` 订阅 `/devwork/api/stream`；连接不上自动降级 15s 轮询；
   右上角实时/轮询/离线徽标；外部变更提示「看板已同步」。
 - **agent 工具**：`dev_board`（读，可按项目过滤）、`dev_project`（项目列表 / 新建 / 修改）、
@@ -38,9 +40,17 @@ agent 通过工具读写同一份数据并用 `dev_item` 回报进展。
 |---|---|
 | ![项目](docs/preview/projects-dark.png) | ![切换器](docs/preview/switcher-dark.png) |
 
-| 项目关联空间 |
-|---|
-| ![空间](docs/preview/project-space-dark.png) |
+| 项目关联空间 | 主题选择（设置） |
+|---|---|
+| ![空间](docs/preview/project-space-dark.png) | ![主题](docs/preview/theme-picker-dark.png) |
+
+| 海洋主题 | 日落主题 | 森林主题 |
+|---|---|---|
+| ![海洋](docs/preview/theme-ocean-dark.png) | ![日落](docs/preview/theme-sunset-dark.png) | ![森林](docs/preview/theme-forest-dark.png) |
+
+| 森林主题（浅色宿主） | |
+|---|---|
+| ![浅色](docs/preview/theme-forest-light.png) | |
 
 | 任务抽屉（深色） | 今日（浅色） |
 |---|---|

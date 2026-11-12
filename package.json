@@ -1,9 +1,9 @@
 {
   "name": "dsh-devwork",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": false,
   "type": "module",
-  "description": "开发工作台：在 DeepSeek Harness 里用项目组织设计、产品、开发、测试任务——多项目并行看板、项目关联工作区（空间）、今日焦点、实时状态与活动流。",
+  "description": "开发工作台：在 DeepSeek Harness 里用项目组织设计、产品、开发、测试任务——多项目并行看板、项目关联工作区（空间）、三套可选主题、今日焦点、实时状态与活动流。",
   "license": "MIT",
   "exports": {
     ".": "./index.js",
@@ -50,7 +50,9 @@
     "multi-project",
     "project-management",
     "real-time",
-    "workspace"
+    "workspace",
+    "themes",
+    "color-theme"
   ],
   "author": {
     "name": "wjinxuan",
